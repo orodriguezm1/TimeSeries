@@ -6,6 +6,8 @@ from tensorflow.keras.models import Sequential
 import matplotlib.pyplot as plt
 from time import time
 
+from tensorflow.python.ops.distributions.kullback_leibler import cross_entropy
+
 # ---------------------------------------------------------------------------
 # Inicialización
 # ---------------------------------------------------------------------------

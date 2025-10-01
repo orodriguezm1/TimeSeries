@@ -69,7 +69,7 @@ model = TwoLayerRNN()
 # 5. Entrenamiento
 # =================================
 LR = [0.1, 0.01]
-EP = [2000, 3000]
+EP = [200, 300]
 for i in range(len(LR)):
     model.compile(optimizer=tf.keras.optimizers.Adam(LR[i]), loss='mse')
     history = model.fit(X, Y, epochs=EP[i], verbose=0)
