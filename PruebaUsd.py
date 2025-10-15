@@ -1,56 +1,130 @@
 import yfinance as yf
+import warnings
+warnings.filterwarnings("ignore", message=".*verbose is deprecated.*")
 import pandas as pd
 from datetime import date, timedelta
+from statsmodels.tsa.stattools import grangercausalitytests
 
-# 📅 Fechas del último mes
+
+# ============================================================
+# CONFIGURACIÓN
+# ============================================================
+
+# Rango temporal: último año de datos diarios
 end = date.today()
-start = end - timedelta(days=30)
-
+start = end - timedelta(days=365)
 print(f"Descargando datos desde {start} hasta {end}...\n")
 
-def descargar_cierre(ticker, nombre):
-    """Descarga el precio de cierre y aplana columnas si es necesario"""
-    df = yf.download(ticker, start=start, end=end, interval="1d", auto_adjust=True, progress=False)
-    # Aplanar columnas si son multinivel
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = ['_'.join(col).strip() for col in df.columns.values]
-    # Buscar la columna de cierre
-    close_cols = [c for c in df.columns if 'Close' in c]
-    if not close_cols:
-        raise ValueError(f"No se encontró columna 'Close' en {ticker}")
-    df = df[[close_cols[0]]].rename(columns={close_cols[0]: nombre})
-    return df
 
-# 💵 Tipo de cambio USD/COP
-usd_cop = descargar_cierre("USDCOP=X", "USD_COP")
+# ============================================================
+# FUNCIONES AUXILIARES
+# ============================================================
 
-# 🛢️ Precio del Brent (USD)
-brent = descargar_cierre("BZ=F", "Brent_USD")
+def descargar_cierre(tickers):
+    """
+    Descarga precios de cierre ajustados de múltiples activos desde Yahoo Finance.
+    Devuelve un DataFrame con una columna por activo, indexado por fecha.
+    """
+    datos = {}
+    for nombre, ticker in tickers.items():
+        df = yf.download(ticker, start=start, end=end, interval="1d", auto_adjust=True, progress=False)
 
-# 📈 Tasa de bonos de EE. UU. (proxy tasa FED)
-fed_rate = descargar_cierre("^IRX", "FED_RATE")
+        # Si las columnas son multinivel, se aplanan
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = ['_'.join(col).strip() for col in df.columns.values]
 
-# ⚡ Índice de volatilidad VIX
-vix = descargar_cierre("^VIX", "VIX")
+        # Selecciona la columna de cierre
+        col_cierre = [c for c in df.columns if "Close" in c][0]
+        datos[nombre] = df[col_cierre]
 
-# 🏛️ S&P500 (referencia global)
-sp500 = descargar_cierre("^GSPC", "SP500")
+    return pd.DataFrame(datos)
 
-# 🔗 Combinar todo por fecha
-df = usd_cop.merge(brent, left_index=True, right_index=True, how="inner")
-df = df.merge(fed_rate, left_index=True, right_index=True, how="inner")
-df = df.merge(vix, left_index=True, right_index=True, how="inner")
-df = df.merge(sp500, left_index=True, right_index=True, how="inner")
 
-# 💰 Agregar columna: Precio del barril en COP
+def test_granger(df, variable_dependiente, variable_independiente, maxlag=5):
+    """
+    Ejecuta un test de causalidad de Granger para verificar si una variable
+    (variable_independiente) tiene poder predictivo sobre otra (variable_dependiente).
+
+    Retorna el valor p mínimo obtenido entre los rezagos analizados.
+    """
+    resultado = grangercausalitytests(df[[variable_dependiente, variable_independiente]],
+                                      maxlag=maxlag, verbose=False)
+    p_values = [resultado[i + 1][0]['ssr_ftest'][1] for i in range(maxlag)]
+    return min(p_values)
+
+
+# ============================================================
+# DESCARGA DE DATOS
+# ============================================================
+
+tickers = {
+    "USD_COP": "USDCOP=X",   # Tipo de cambio Peso Colombiano / Dólar
+    "Brent_USD": "BZ=F",     # Precio del petróleo Brent en USD
+    "FED_RATE": "^IRX",      # Tasa de bonos del Tesoro (proxy FED)
+    "VIX": "^VIX",           # Índice de volatilidad global
+    "SP500": "^GSPC"         # Índice S&P 500
+}
+
+df = descargar_cierre(tickers)
+
+# ============================================================
+# TRANSFORMACIONES Y CÁLCULOS
+# ============================================================
+
+# Precio del barril en pesos colombianos
 df["Brent_COP"] = df["USD_COP"] * df["Brent_USD"]
 
-# 📊 Reordenar columnas
-df = df[["USD_COP", "Brent_USD", "Brent_COP", "FED_RATE", "VIX", "SP500"]]
+# Reordenar columnas y establecer índice
+df = df[["USD_COP", "Brent_COP", "FED_RATE", "VIX", "SP500"]]
 df.index.name = "Fecha"
 
-# 💾 Guardar resultados
+# Guardar los resultados
 df.to_csv("indicadores_usd_petroleo.csv")
-
-print("✅ Archivo 'indicadores_usd_petroleo.csv' generado con éxito.\n")
+print("Archivo 'indicadores_usd_petroleo.csv' generado con éxito.\n")
 print(df.tail())
+
+
+# ============================================================
+# TEST DE CAUSALIDAD DE GRANGER
+# ============================================================
+
+# Diferencias para estacionarizar las series
+data_diff = df[["USD_COP", "Brent_COP", "FED_RATE", "VIX", "SP500"]].dropna().diff().dropna()
+
+# Pares de variables para probar causalidad
+pares = [
+    ("USD_COP", "Brent_COP"),  # ¿El petróleo predice el dólar?
+    ("USD_COP", "FED_RATE"),   # ¿La tasa FED predice el dólar?
+    ("USD_COP", "VIX"),        # ¿El VIX predice el dólar?
+    ("USD_COP", "SP500"),        # ¿El SP500 predice el dólar?
+]
+
+causales_significativas = []
+print("\nResultados de causalidad de Granger (p-valores mínimos):\n")
+for dependiente, independiente in pares:
+    p_value = test_granger(data_diff, dependiente, independiente, maxlag=5)
+    es_causal = p_value < 0.05
+    resultado = "Existe causalidad (p < 0.05)" if es_causal else "No se encontró causalidad"
+    print(f"{independiente} → {dependiente}: p = {p_value:.4f} | {resultado}")
+
+    if es_causal:
+        causales_significativas.append((dependiente, independiente))
+
+# ============================================================
+# GUARDAR CSV CON VARIABLES CAUSALES
+# ============================================================
+
+if causales_significativas:
+    # Identificar todas las variables que participan en relaciones significativas
+    variables_significativas = set()
+    for dep, indep in causales_significativas:
+        variables_significativas.update([dep, indep])
+
+    # Filtrar el DataFrame original para mantener solo esas columnas
+    df_causales = df[list(variables_significativas)]
+    df_causales.to_csv("indicadores_causales.csv")
+
+    print("\nSe detectaron relaciones causales significativas.")
+    print(f"Variables incluidas en 'indicadores_causales.csv': {', '.join(variables_significativas)}")
+else:
+    print("\nNo se detectaron relaciones causales significativas. No se generó archivo adicional.")
