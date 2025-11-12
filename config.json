@@ -1,0 +1,7 @@
+{
+  "path": "/Users/orodriguez/PycharmProjects/TimeSeries/indicadores_causales.csv",
+  "target_column": "USD_COP",
+  "architecture": [32, 16],
+  "epochs": 300,
+  "days_to_predict": 30
+}
